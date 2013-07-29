@@ -87,13 +87,13 @@ class Tunnel():
     def handshake(self,tunnel):
         logging.info("handshake with the server ...")
         for i in xrange(3):
-            tunnel.sendall(chr(0) + KEY)
+            tunnel.sendto(chr(0) + KEY,(SERVER,PORT))
             #tunnel.shutdown(1)
 
         logging.info("start to recv ")
         signal.signal(signal.SIGALRM, onRecvParamTimeout)
         signal.alarm(5)
-        packet = tunnel.recv(1024)
+        packet,src = tunnel.recvfrom(1024)
         signal.alarm(0)
         logging.info("recv finished == %s" %str(packet).strip())
         if (len(packet) > 0 and packet[0] == chr(0)):
@@ -132,7 +132,7 @@ class Tunnel():
     def run(self):
         logging.info("start to run ...")
         self.udpfd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udpfd.connect((SERVER, PORT))
+        #self.udpfd.connect((SERVER, PORT))
         self.handshake(self.udpfd)
         logging.info("connected successful")
         #maxlentfd = 0
@@ -143,16 +143,16 @@ class Tunnel():
             for r in rset:
                 if r == self.tfd:
                     if DEBUG: os.write(1,'>')
-                    data = os.read(self.tfd, self.mtu)
+                    data = os.read(self.tfd, BUFFER_SIZE)
                     if len(data):
-                        self.udpfd.sendall(data)
+                        self.udpfd.sendto(data,(SERVER,PORT))
                         aliveTime = time.time()
                         #print 'the len of data read from interface is %d' %len(data)
                         #maxlentfd = maxlentfd > len(data) and maxlentfd or len(data)
                         #print 'the max lenth of data recv from interface is ',maxlentfd
                 elif r == self.udpfd:
                     if DEBUG: os.write(1,'<')
-                    data = self.udpfd.recv(BUFFER_SIZE)
+                    data,src = self.udpfd.recvfrom(BUFFER_SIZE)
                     if data[0] != chr(0):
                         os.write(self.tfd, data)
                     if time.time() - aliveTime > TIMEOUT:
