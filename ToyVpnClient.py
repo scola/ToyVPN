@@ -1,12 +1,19 @@
 #!/usr/bin/python
+# coding:utf-8
+"""
+__version__ = '1.0'
+__date__  = '2013-07-29'
+__author__ = "shaozheng.wu@gmail.com"
+"""
 
-'''''
-    UDP Tunnel VPN
-    Xiaoxia (xiaoxia@xiaoxia.org)
-    Updated: 2012-2-21
-'''
+from __future__ import with_statement
+import sys
+if sys.version_info < (2, 6):
+    import simplejson as json
+else:
+    import json
 
-import os, sys
+import os
 import hashlib
 import getopt
 import fcntl
@@ -15,19 +22,16 @@ import struct
 import socket, select
 import traceback
 import signal
-import ctypes
-import binascii
 import logging
-import re
-import subprocess
 
 #SHARED_PASSWORD = hashlib.sha1("xiaoxia").digest()
 TUNSETIFF = 0x400454ca
 IFF_TUN   = 0x0001
 IFF_NO_PI = 0x1000
-BUFFER_SIZE = 32767
 
-#TIMEOUT = 60*10 # seconds
+TIMEOUT = 60*10 # seconds
+DEBUG = 0
+BUFFER_SIZE = 32767
 
 class Tunnel():
     def __init__(self):
@@ -40,22 +44,21 @@ class Tunnel():
             self.tfd = os.open("/dev/net/tun", os.O_RDWR)
         except:
             self.tfd = os.open("/dev/tun", os.O_RDWR)
-        ifs = fcntl.ioctl(self.tfd, TUNSETIFF, struct.pack("16sH", "tun0", IFF_TUN| IFF_NO_PI))
+        ifs = fcntl.ioctl(self.tfd, TUNSETIFF, struct.pack("16sH", "tun%d", IFF_TUN|IFF_NO_PI))
         self.tname = ifs[:16].strip("\x00")
-        #subprocess.check_call('ifconfig tun0 %s pointopoint 10.0.0.2 up' %self.address,
-        #                        shell=True)
 
     def close(self):
         os.close(self.tfd)
 
     def config(self, ip):
-        print "Configuring interface %s with ip %s" % (self.tname, ip)
+        logging.info("Configuring interface %s with ip %s" %(self.tname, ip))
         os.system("ip link set %s up" % (self.tname))
-        os.system("ip link set %s mtu %s" % (self.tname,self.mtu))
         os.system("ip addr add %s dev %s" % (ip, self.tname))
+        os.system("ip link set %s mtu %s" % (self.tname,self.mtu))
+        os.system("ifconfig %s netmask 255.255.255.0" %self.tname)
 
     def config_routes(self):
-        print "Setting up new gateway ..."
+        logging.info("Setting up new gateway ...")
         # Look for default route
         routes = os.popen("ip route show").readlines()
         defaults = [x.rstrip() for x in routes if x.startswith("default")]
@@ -63,11 +66,11 @@ class Tunnel():
             raise Exception("Default route not found, maybe not connected!")
         self.prev_gateway = defaults[0]
         self.new_gateway = "default dev %s metric 1" % (self.tname)
-        self.tun_gateway = self.prev_gateway.replace("default", IP)
+        self.tun_gateway = self.prev_gateway.replace("default", SERVER)
         self.old_dns = file("/etc/resolv.conf", "rb").read()
         # Remove default gateway
         os.system("ip route del " + self.prev_gateway)
-        # Add exception for server
+        # Add route for gateway
         os.system("ip route add " + self.tun_gateway)
         # Add new default gateway
         os.system("ip route add " + self.new_gateway)
@@ -75,7 +78,7 @@ class Tunnel():
         file("/etc/resolv.conf", "wb").write("nameserver %s" %self.dns)
 
     def restore_routes(self):
-        print "Restoring previous gateway ..."
+        logging.info("Restoring previous gateway ...")
         os.system("ip route del " + self.new_gateway)
         os.system("ip route del " + self.tun_gateway)
         os.system("ip route add " + self.prev_gateway)
@@ -86,18 +89,22 @@ class Tunnel():
         for i in xrange(3):
             tunnel.sendall(chr(0) + KEY)
             #tunnel.shutdown(1)
-        for i in xrange(50):
-            time.sleep(1)
-            logging.info("start to recv ")
-            packet = tunnel.recv(1024)
-            logging.info("recv finished == %s" %str(packet).strip())
-            if (len(packet) > 0 and packet[0] == chr(0)):
-                self.configure(str(packet[1:]).strip())
-                return
-        raise Exception("Failed to log in server.")
+
+        logging.info("start to recv ")
+        signal.signal(signal.SIGALRM, onRecvParamTimeout)
+        signal.alarm(5)
+        packet = tunnel.recv(1024)
+        signal.alarm(0)
+        logging.info("recv finished == %s" %str(packet).strip())
+        if (len(packet) > 0 and packet[0] == chr(0)):
+            if 'WRONG PASSWORD' in packet:
+                raise Exception("password is wrong") 
+            self.configure(str(packet[1:]).strip())
+            return
+        raise Exception("Failed to login server.")
 
     def configure(self,parameters):
-        logging.info("config the parameters == %s" %parameters)
+        logging.info("config the parameters")
         if self.tfd and parameters == self.mParameters:
             logging.info('Using the previous interface')
             return
@@ -107,8 +114,6 @@ class Tunnel():
                 self.mtu = int(fields[1])
             elif fields[0][0] == 'a':
                 self.address = fields[1]
-            elif fields[0][0] == 'r':
-                self.route = fields[1]
             elif fields[0][0] == 'd':
                 self.dns = fields[1]
         self.mParameters = parameters
@@ -127,58 +132,77 @@ class Tunnel():
     def run(self):
         logging.info("start to run ...")
         self.udpfd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udpfd.connect((IP, PORT))
+        self.udpfd.connect((SERVER, PORT))
         self.handshake(self.udpfd)
         logging.info("connected successful")
-
+        #maxlentfd = 0
+        #maxlenudpfd = 0
+        aliveTime = time.time()
         while True:
             rset = select.select([self.udpfd, self.tfd], [], [], 1)[0]
             for r in rset:
                 if r == self.tfd:
-                    os.write(1,'>')
-                    data = os.read(self.tfd, BUFFER_SIZE)
+                    if DEBUG: os.write(1,'>')
+                    data = os.read(self.tfd, self.mtu)
                     if len(data):
                         self.udpfd.sendall(data)
-                        data = None
+                        aliveTime = time.time()
+                        #print 'the len of data read from interface is %d' %len(data)
+                        #maxlentfd = maxlentfd > len(data) and maxlentfd or len(data)
+                        #print 'the max lenth of data recv from interface is ',maxlentfd
                 elif r == self.udpfd:
-
-                    os.write(1,'<')
+                    if DEBUG: os.write(1,'<')
                     data = self.udpfd.recv(BUFFER_SIZE)
                     if data[0] != chr(0):
                         os.write(self.tfd, data)
-                    data = None
+                    if time.time() - aliveTime > TIMEOUT:
+                        logging.info("recieve data from the tunnel timeout")
+                        #self.run()
+
+                        #print 'the len of data read from udp tunnel is %d' %len(data)
+                        #maxlenudpfd = maxlenudpfd > len(data) and maxlenudpfd or len(data)
+                        #print 'the max lenth of data recv from udp tunnel is ',maxlenudpfd
+
 
 
 def usage(status = 0):
-    print "Usage: %s [-s server|-p port|-k passord|-h help] " % (sys.argv[0])
+    print "Usage: %s [-s server|-p port|-k passord|-h help|-d:debug] " % (sys.argv[0])
     sys.exit(status)
 
 def on_exit(no, info):
     raise Exception("TERM or TSTP signal caught!" )
 
+def onRecvParamTimeout(no, info):
+    raise Exception("Recieve parameters timeout!" )
+
 if __name__=="__main__":
     logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)-8s %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S', filemode='a+')
-    opts = getopt.getopt(sys.argv[1:],"s:p:k:h:")
-    IP   = ''
-    PORT = 0
-    KEY  = ''
+
+    with open('config.json', 'rb') as f:
+        config = json.load(f)
+    SERVER = config['server']
+    PORT = config['server_port']
+    KEY = config['password']
+
+    opts = getopt.getopt(sys.argv[1:],"s:p:k:hd")
     for opt,optarg in opts[0]:
         if opt == "-h":
             usage()
         elif opt == "-s":
-            IP = socket.gethostbyname(optarg)
+            SERVER = socket.gethostbyname(optarg)
         elif opt == "-p":
             PORT = int(optarg)
         elif opt == "-k":
             KEY  = optarg
+        elif opt == "-d":
+            DEBUG = True
 
-    if False == (IP and PORT):
+    if False == (SERVER and PORT and KEY):
         usage(1)
 
     tun = Tunnel()
     signal.signal(signal.SIGTERM, on_exit)
-
     signal.signal(signal.SIGTSTP, on_exit)
     try:
         tun.run()
