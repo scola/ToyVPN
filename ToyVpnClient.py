@@ -32,6 +32,7 @@ IFF_NO_PI = 0x1000
 TIMEOUT = 60*10 # seconds
 DEBUG = 0
 BUFFER_SIZE = 32767
+MAX_COUNT = 20
 
 class Tunnel():
     def __init__(self):
@@ -98,7 +99,7 @@ class Tunnel():
         logging.info("recv finished == %s" %str(packet).strip())
         if (len(packet) > 0 and packet[0] == chr(0)):
             if 'WRONG PASSWORD' in packet:
-                raise Exception("password is wrong") 
+                raise Exception("password is wrong")
             self.configure(str(packet[1:]).strip())
             return
         raise Exception("Failed to login server.")
@@ -132,41 +133,40 @@ class Tunnel():
     def run(self):
         logging.info("start to run ...")
         self.udpfd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        #self.udpfd.connect((SERVER, PORT))
+        self.udpfd.bind(("", 0))
         self.handshake(self.udpfd)
         logging.info("connected successful")
         #maxlentfd = 0
         #maxlenudpfd = 0
-        aliveTime = time.time()
+        alive_count = 0
         while True:
             rset = select.select([self.udpfd, self.tfd], [], [], 1)[0]
-            for r in rset:
-                if r == self.tfd:
-                    if DEBUG: os.write(1,'>')
-                    data = os.read(self.tfd, BUFFER_SIZE)
-                    if len(data):
-                        self.udpfd.sendto(data,(SERVER,PORT))
-                        aliveTime = time.time()
-                        #print 'the len of data read from interface is %d' %len(data)
-                        #maxlentfd = maxlentfd > len(data) and maxlentfd or len(data)
-                        #print 'the max lenth of data recv from interface is ',maxlentfd
-                elif r == self.udpfd:
-                    if DEBUG: os.write(1,'<')
-                    data,src = self.udpfd.recvfrom(BUFFER_SIZE)
-                    if data[0] != chr(0):
-                        os.write(self.tfd, data)
-                    if time.time() - aliveTime > TIMEOUT:
+            if self.tfd in rset:
+                if DEBUG: os.write(1,'>')
+                data = os.read(self.tfd, BUFFER_SIZE)
+                if len(data):
+                    self.udpfd.sendto(data,(SERVER,PORT))
+                    alive_count += 1
+                    if alive_count > MAX_COUNT:
                         logging.info("recieve data from the tunnel timeout")
-                        #self.run()
-
-                        #print 'the len of data read from udp tunnel is %d' %len(data)
-                        #maxlenudpfd = maxlenudpfd > len(data) and maxlenudpfd or len(data)
-                        #print 'the max lenth of data recv from udp tunnel is ',maxlenudpfd
+                    #print 'the len of data read from interface is %d' %len(data)
+                    #maxlentfd = maxlentfd > len(data) and maxlentfd or len(data)
+                    #print 'the max lenth of data recv from interface is ',maxlentfd
+            if self.udpfd in rset:
+                if DEBUG: os.write(1,'<')
+                data,src = self.udpfd.recvfrom(BUFFER_SIZE)
+                if data[0] != chr(0):
+                    os.write(self.tfd, data)
+                    alive_count = 0
+                    #self.run()
+                    #print 'the len of data read from udp tunnel is %d' %len(data)
+                    #maxlenudpfd = maxlenudpfd > len(data) and maxlenudpfd or len(data)
+                    #print 'the max lenth of data recv from udp tunnel is ',maxlenudpfd
 
 
 
 def usage(status = 0):
-    print "Usage: %s [-s server|-p port|-k passord|-h help|-d:debug] " % (sys.argv[0])
+    print "Usage: %s [-s server|-p port|-k passord|-h help|-d debug] " % (sys.argv[0])
     sys.exit(status)
 
 def on_exit(no, info):
