@@ -56,54 +56,70 @@ class Tunnel():
         self.udpfd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udpfd.bind(("", PORT))
         self.clients = {}
-
+        self.reaped_key = []
         while True:
             rset = select.select([self.udpfd, self.tfd], [], [], 1)[0]
-            for r in rset:
-                if r == self.tfd:
-                    if DEBUG: os.write(1, ">")
-                    data = os.read(self.tfd,BUFFER_SIZE)
-                    dst = data[16:20]
-                    for key in self.clients:
-                        if dst == self.clients[key]["localIPn"]:
-                            self.udpfd.sendto(data, key)
-                    # Remove timeout clients
-                    curTime = time.time()
-                    for key in self.clients.keys():
-                        if curTime - self.clients[key]["aliveTime"] > TIMEOUT:
-                            logging.warn("Remove timeout client %s" %key)
-                            del self.clients[key]
+            if self.tfd in rset:
+                if DEBUG: os.write(1, ">")
+                data = os.read(self.tfd,BUFFER_SIZE)
+                dst = data[16:20]
+                if dst in self.clients:
+                    self.udpfd.sendto(data, self.clients[dst]['localIPn'])
+                # Remove timeout clients
+                curTime = time.time()
+                for key in self.clients.keys():
+                    if curTime - self.clients[key]["aliveTime"] > TIMEOUT:
+                        logging.warn("Remove timeout client %s,%s" %self.clients[dst]['localIPn'])
+                        self.reaped_key.append(key)
+                        del self.clients[key]
 
-                elif r == self.udpfd:
-                    if DEBUG: os.write(1, "<")
-                    data, src = self.udpfd.recvfrom(BUFFER_SIZE)
-                    key = src
-                    if key not in self.clients:
-                        # New client comes
-                        if data[0] == chr(0) and data[1:] == KEY:
-                            localIP = parameters['address'].split(',')[0]
+            if self.udpfd in rset:
+                if DEBUG: os.write(1, "<")
+                data, src = self.udpfd.recvfrom(BUFFER_SIZE)
+                # Simply write the packet to local or forward them to other clients
+                if data[0] != chr(0):
+                    if data[12:16] in self.clients:
+                        os.write(self.tfd, data)
+                        self.clients[data[12:16]]["aliveTime"] = time.time()
+                        self.clients[data[12:16]]["localIPn"] = src
+                else:
+                    login = False
+                    for key in self.clients.keys():
+                        if self.clients[key]["localIPn"] == src:
+                            login = True
+                            break
+                    if login:
+                       continue 
+                    if data[1:] == KEY: 
+                        localIP = parameters['address'].split(',')[0]
+                        if self.reaped_key:
+                            localIP = self.reaped_key.pop()
+                        else:
+                            IPchr = socket.inet_aton(localIP)
+                            if self.clients:
+                                IPchr = sorted(self.clients)[-1]
                             IPchr = socket.inet_aton(localIP)
                             IPchr = struct.pack('>I',struct.unpack('>I',IPchr)[0] + 1)
-                            self.clients[key] = {"aliveTime": time.time(),
-                                                "localIPn": IPchr}
+                            self.clients[IPchr] = {"aliveTime": time.time(),
+                                                "localIPn": src}
                             localIP = socket.inet_ntoa(IPchr)
                             parameters['address'] = localIP+',32'  #it's used for Compatible with android ToyVPN Client
-                            logging.info("New Client from %s request IP %s" %(src,localIP))
-                            logging.info("send parameters ==%s" %(chr(0) + " ".join(["%s,%s" % (k[0], v) for k, v in parameters.items()])))
-                            for i in xrange(3):
-                                self.udpfd.sendto(chr(0) + " ".join(["%s,%s" % (k[0], v) for k, v in parameters.items()]), src)
-                        else:
-                            logging.error("Need valid password from %s" %src)
-                            self.udpfd.sendto(chr(0) + "WRONG PASSWORD", src)
+                        localIPn_key =  socket.inet_aton(localIP)
+                        self.clients[localIPn_key] = {"aliveTime": time.time(),
+                                                "localIPn": src}
+
+                        parameters['address'] = localIP+',32'
+                        logging.info("New Client from %s request IP %s" %(src,localIP))
+                        logging.info("send parameters ==%s" %(chr(0) + " ".join(["%s,%s" % (k[0], v) for k, v in parameters.items()])))
+                        for i in xrange(3):
+                            self.udpfd.sendto(chr(0) + " ".join(["%s,%s" % (k[0], v) for k, v in parameters.items()]), src)
                     else:
-                        # Simply write the packet to local or forward them to other clients
-                        if data[0] != chr(0):
-                            os.write(self.tfd, data)
-                            self.clients[key]["aliveTime"] = time.time()
+                        logging.error("Need valid password from %s,%s" %src)
+                        self.udpfd.sendto(chr(0) + "WRONG PASSWORD", src)
 
 
 def usage(status = 0):
-    print "Usage: %s [-p port|-k key|-m mtu|-d dns|-r route|-h help|-d:debug]\
+    print "Usage: %s [-p port|-k key|-h help|-d debug]\
     or configurate your config.json correctly" % (sys.argv[0])
     sys.exit(status)
 
@@ -119,7 +135,7 @@ if __name__=="__main__":
     PORT = parameters['server_port']
     KEY = parameters['password']
     del parameters['server'],parameters['server_port'],parameters['password']
-    opts = getopt.getopt(sys.argv[1:],"p:k:m:r:ht")
+    opts = getopt.getopt(sys.argv[1:],"p:k:hd")
     for opt,optarg in opts[0]:
         if opt == "-h":
             usage()
@@ -127,13 +143,7 @@ if __name__=="__main__":
             PORT = int(optarg)
         elif opt == "-k":
             KEY  = optarg
-        elif opt == "-m":
-            parameters['mtu'] = optarg
         elif opt == "-d":
-            parameters['dns'] = optarg
-        elif opt == "-r":
-            parameters['route'] = optarg
-        elif opt == "-t":
             DEBUG = True
 
     if  not PORT or not KEY or len(parameters.keys()) < 4:
