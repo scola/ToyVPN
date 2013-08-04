@@ -32,7 +32,7 @@ IFF_NO_PI = 0x1000
 TIMEOUT = 60*10 # seconds
 DEBUG = 0
 BUFFER_SIZE = 32767
-MAX_COUNT = 20
+MAX_COUNT = 50
 
 class Tunnel():
     def __init__(self):
