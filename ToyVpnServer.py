@@ -93,7 +93,7 @@ class Tunnel():
                     if data[1:] == KEY: 
                         localIP = parameters['address'].split(',')[0]
                         if self.reaped_key:
-                            localIP = self.reaped_key.pop()
+                            localIP = socket.inet_ntoa(self.reaped_key.pop())
                         else:
                             IPchr = socket.inet_aton(localIP)
                             if self.clients:
