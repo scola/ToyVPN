@@ -65,6 +65,8 @@ class Tunnel():
                 dst = data[16:20]
                 if dst in self.clients:
                     self.udpfd.sendto(data, self.clients[dst]['localIPn'])
+                else:
+                    logging.warn("There's no client %s connected to server" %socket.inet_ntoa(dst))
                 # Remove timeout clients
                 curTime = time.time()
                 for key in self.clients.keys():
@@ -82,6 +84,8 @@ class Tunnel():
                         os.write(self.tfd, data)
                         self.clients[data[12:16]]["aliveTime"] = time.time()
                         self.clients[data[12:16]]["localIPn"] = src
+                    else:
+                        logging.warn("There's no client %s connected to server" %socket.inet_ntoa(data[12:16]))
                 else:
                     login = False
                     for key in self.clients.keys():
