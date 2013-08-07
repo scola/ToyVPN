@@ -71,7 +71,7 @@ class Tunnel():
                 curTime = time.time()
                 for key in self.clients.keys():
                     if curTime - self.clients[key]["aliveTime"] > TIMEOUT:
-                        logging.warn("Remove timeout client %s,%s" %self.clients[dst]['localIPn'])
+                        logging.warn("Remove timeout client %s,%s" %self.clients[key]['localIPn'])
                         self.reaped_key.append(key)
                         del self.clients[key]
 
